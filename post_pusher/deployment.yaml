@@ -14,14 +14,6 @@ spec:
     spec:
       containers:
       - name: post-pusher-kafka
-        image: 2024_kubernetes_post_pusher:latest 
-        imagePullPolicy: Never                   
+        image: 2024_kubernetes_post_pusher:latest
+        imagePullPolicy: Never
         command: ["python", "main.py", "--multiple", "--kafka_host=kafka-broker-service:9092"]
-        volumeMounts:
-        - name: gcp-sa-volume
-          mountPath: /service-account.json 
-          subPath: service-account.json    
-      volumes:
-      - name: gcp-sa-volume
-        secret:
-          secretName: gcp-sa-key 
