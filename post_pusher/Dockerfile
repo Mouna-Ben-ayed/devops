@@ -5,4 +5,5 @@ ENV PYTHONUNBUFFERED=1
 
 #COPY ./service-account.json ./service-account.json
 COPY . ./
+#
 CMD ["python", "main.py"]
