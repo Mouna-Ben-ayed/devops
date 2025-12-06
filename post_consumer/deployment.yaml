@@ -15,9 +15,17 @@ spec:
         app: post-consumer
     spec:
       containers:
-      - name: post-consumer
-        image: post-consumer:latest
-        imagePullPolicy: Never
-        args:
-          - "--kafka_host"
-          - "kafka-broker-service:9092"
+        - name: post-consumer
+          image: post-consumer:latest
+          imagePullPolicy: Never    
+          args:
+            - "--kafka_host"
+            - "kafka-broker-service:9092"
+          volumeMounts:
+          - name: gcp-sa-volume
+            mountPath: /service-account.json 
+            subPath: service-account.json   
+      volumes:
+        - name: gcp-sa-volume
+          secret:
+            secretName: gcp-sa-key # Nom du Secret créé à l'étape 2
