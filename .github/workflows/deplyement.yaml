@@ -41,7 +41,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: ./post_consumer
-        file: ./post_consumer/dokerfile # Utilisation de 'dokerfile'
+        file: ./post_consumer/Dockerfile # Utilisation de 'Dockerfile'
         push: true
         # UTILISATION DE LA VARIABLE EN MINUSCULES
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-consumer:${{ github.sha }}
@@ -50,7 +50,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: ./post_pusher 
-        file: ./post_pusher/dokerfile # Utilisation de 'dokerfile' (correction basée sur les fichiers précédents)
+        file: ./post_pusher/Dockerfile # Utilisation de 'Dockerfile' (correction basée sur les fichiers précédents)
         push: true
         # UTILISATION DE LA VARIABLE EN MINUSCULES
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher:${{ github.sha }}
