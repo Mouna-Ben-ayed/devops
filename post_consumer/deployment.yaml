@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: post-consumer
+  labels:
+    app: post-consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: post-consumer
+  template:
+    metadata:
+      labels:
+        app: post-consumer
+    spec:
+      containers:
+      - name: post-consumer
+        image: post-consumer:latest
+        imagePullPolicy: Never
+        args:
+          - "--kafka_host"
+          - "kafka-broker-service:9092"
