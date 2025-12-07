@@ -132,9 +132,9 @@ jobs:
         REGISTRY_PATH="${{ env.REGISTRY }}/$OWNER_LC"
         SA_SECRET="${{ env.SA_SECRET_NAME }}"
         
-        CONSUMER_DEPLOYMENT="post_consumer/deployement.yaml"
-        PUSHER_DEPLOYMENT="post_pusher/deployement.yaml"
-        UI_DEPLOYMENT="ui/deployement.yaml"
+        CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml"
+        PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"
+        UI_DEPLOYMENT="ui/deployment.yaml"
         MOUNT_PATH='/service-account.json' 
         
         patch_sa() {
@@ -183,11 +183,11 @@ jobs:
         
         echo "--- Applying Kafka UI ---"
         kubectl apply -f ui/service.yaml
-        kubectl apply -f ui/deployement.yaml 
+        kubectl apply -f ui/deployment.yaml 
         
         echo "--- Applying Application Deployments (Pusher/Consumer) ---"
-        kubectl apply -f post_consumer/deployement.yaml
-        kubectl apply -f post_pusher/deployement.yaml
+        kubectl apply -f post_consumer/deployment.yaml
+        kubectl apply -f post_pusher/deployment.yaml
         
         echo "Deployment complete."
       shell: bash
