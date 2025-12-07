@@ -69,7 +69,7 @@ def save_post_to_json(post, filepath):
 
 def post_bigquery(transformed_post):
     # Authenticate with Google Cloud and initialize the BigQuery client
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./service-account.json"
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/service-account.json"
     client = bigquery.Client()
 
     project_id = client.project
@@ -131,7 +131,7 @@ def post_kafka(transformed_post, kafka_host):
 
 def main(multiple, kafka_host):
     # Load the post from the JSON file
-    data_filepath = "./data/movies-stackexchange/json/posts.json"
+    data_filepath = "/data/movies-stackexchange/json/posts.json"
     log.info(data_filepath)
     log.info(os.getcwd())
     with open(data_filepath, "r") as f:

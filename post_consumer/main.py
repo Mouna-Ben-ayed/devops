@@ -64,7 +64,7 @@ def post_bigquery(client, table_ref, post):
 
 def main(kafka_host):
     # BigQuery Setup
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./service-account.json"
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/service-account.json"
     client = bigquery.Client()
     project_id = client.project
     dataset_id = 'data_devops'
