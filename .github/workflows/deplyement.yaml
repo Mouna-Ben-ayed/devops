@@ -1,4 +1,4 @@
-name: CI/CD Kubernetes Deployment (Secure GCP Access - YQ Method)
+name: CI/CD Kubernetes Deployment (Secure GCP Access - FINAL)
 
 on:
   push:
@@ -23,8 +23,8 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # --- ÉTAPE DE CORRECTION ---
-    - name: ⚙️ Set Lowercase Owner Name
+    # --- CORRECTION DU TAG GHCR (MAJUSCULES INTERDITES) ---
+    - name: Set Lowercase Owner Name
       id: lowercase_owner
       run: |
         # Convertit le nom du propriétaire en minuscules pour le référentiel Docker
@@ -41,18 +41,16 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: ./post_consumer
-        file: ./post_consumer/Dockerfile # Utilisation de 'Dockerfile'
+        file: ./post_consumer/Dockerfile # Nom de fichier corrigé
         push: true
-        # UTILISATION DE LA VARIABLE EN MINUSCULES
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-consumer:${{ github.sha }}
 
     - name: Build and Push post-pusher image
       uses: docker/build-push-action@v5
       with:
         context: ./post_pusher 
-        file: ./post_pusher/Dockerfile # Utilisation de 'Dockerfile' (correction basée sur les fichiers précédents)
+        file: ./post_pusher/Dockerfile # Nom de fichier corrigé
         push: true
-        # UTILISATION DE LA VARIABLE EN MINUSCULES
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher:${{ github.sha }}
 
   deploy:
@@ -63,11 +61,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    # --- ÉTAPE DE CORRECTION ---
-    - name: ⚙️ Set Lowercase Owner Name for Deployment
+    # --- CORRECTION DU TAG GHCR (POUR LE PATCHING YQ) ---
+    - name: Set Lowercase Owner Name for Deployment
       id: lowercase_owner_deploy
       run: |
-        # Crée la variable locale en minuscules pour le patch yq
         echo "owner_lc=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
     - name: Configure Kubectl and Tools
@@ -84,6 +81,13 @@ jobs:
         echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
       shell: bash
 
+    # --- ÉTAPE AJOUTÉE : ATTENDRE L'API ---
+    - name: Wait for Kubernetes API to be Ready
+      run: |
+        # Attendre que le nœud principal soit prêt, garantissant l'accessibilité de l'API
+        kubectl wait --for=condition=ready node --all --timeout=300s
+      shell: bash
+
     - name: Create/Update Secret for Service Account
       run: |
         kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
@@ -94,43 +98,40 @@ jobs:
     - name: Patch Manifestes with yq
       run: |
         SHA_TAG=${{ github.sha }}
-        # UTILISATION DE LA VARIABLE EN MINUSCULES RÉCUPÉRÉE
         OWNER_LC="${{ steps.lowercase_owner_deploy.outputs.owner_lc }}" 
         REGISTRY_PATH="${{ env.REGISTRY }}/$OWNER_LC"
         SA_SECRET="${{ env.SA_SECRET_NAME }}"
         
+        CONSUMER_DEPLOYMENT="post_consumer/deployement.yaml"
+        PUSHER_DEPLOYMENT="post_pusher/deployement.yaml"
+        UI_DEPLOYMENT="ui/deployement.yaml"
         MOUNT_PATH='/service-account.json' 
         
-        # --- Fonction de Patch générique pour SA (Service Account) ---
         patch_sa() {
           DEPLOYMENT_FILE=$1
           CONTAINER_NAME=$2
           
-          # 1. Mise à jour de l'image (via le nom du conteneur)
+          # 1. Mise à jour de l'image
           yq e '.spec.template.spec.containers[] |= 
                 select(.name == "'"$CONTAINER_NAME"'").image = "'"$REGISTRY_PATH/$CONTAINER_NAME:$SHA_TAG"'"' -i "$DEPLOYMENT_FILE"
                 
-          # 2. Injection du Volume Mount dans le conteneur
+          # 2. Injection du Volume Mount
           yq e '.spec.template.spec.containers[] |= 
                 select(.name == "'"$CONTAINER_NAME"'").volumeMounts = [
                   {name: "gcp-sa-volume", mountPath: "'"$MOUNT_PATH"'", subPath: "service-account.json"}
                 ]' -i "$DEPLOYMENT_FILE"
 
-          # 3. Injection de la définition du Volume dans le Pod Spec
+          # 3. Injection de la définition du Volume
           yq e '.spec.template.spec.volumes = [
                   {name: "gcp-sa-volume", secret: {secretName: "'"${{ env.SA_SECRET_NAME }}"'"}}
                 ]' -i "$DEPLOYMENT_FILE"
         }
         
         # --- APPLICATION DES PATCHS ---
-        
-        # Post Consumer
         patch_sa "$CONSUMER_DEPLOYMENT" "post-consumer"
-        
-        # Post Pusher
         patch_sa "$PUSHER_DEPLOYMENT" "post-pusher-kafka"
 
-        # --- Patch Kafka UI (Décommenter ConfigMap) ---
+        # --- Patch Kafka UI (ConfigMap) ---
         # 1. Injection du Volume Mount dans le conteneur 'kafka-ui'
         yq e '.spec.template.spec.containers[] |= 
               select(.name == "kafka-ui").volumeMounts = [
