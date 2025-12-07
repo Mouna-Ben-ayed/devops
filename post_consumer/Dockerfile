@@ -1,8 +1,7 @@
-FROM python:3.9.20-slim-bookworm
+FROM python:3.11-slim
 
-RUN pip install google-cloud-bigquery kafka-python
-ENV PYTHONUNBUFFERED=1
-
-#COPY ./service-account.json ./service-account.json
 COPY . ./
+
+RUN pip install --no-cache-dir kafka-python google-cloud-bigquery
+
 CMD ["python", "main.py"]
