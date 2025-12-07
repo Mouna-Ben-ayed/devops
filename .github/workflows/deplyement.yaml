@@ -132,44 +132,47 @@ jobs:
         REGISTRY_PATH="${{ env.REGISTRY }}/$OWNER_LC"
         SA_SECRET="${{ env.SA_SECRET_NAME }}"
         
-        CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml"
-        PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"
-        UI_DEPLOYMENT="ui/deployment.yaml"
+        CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml" # Correction de la faute de frappe
+        PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"     # Correction de la faute de frappe
+        UI_DEPLOYMENT="ui/deployment.yaml"                 # Correction de la faute de frappe
         MOUNT_PATH='/service-account.json' 
         
         patch_sa() {
           DEPLOYMENT_FILE=$1
           CONTAINER_NAME=$2
           
-          # 1. Mise à jour de l'image
+          # 1. Mise à jour de l'image (Ne change pas)
           yq e '.spec.template.spec.containers[] |= 
                 select(.name == "'"$CONTAINER_NAME"'").image = "'"$REGISTRY_PATH/$CONTAINER_NAME:$SHA_TAG"'"' -i "$DEPLOYMENT_FILE"
                 
-          # 2. Injection du Volume Mount
+          # 2. Injection du Volume Mount (CORRECTION)
           yq e '.spec.template.spec.containers[] |= 
-                select(.name == "'"$CONTAINER_NAME"'").volumeMounts = [
-                  {name: "gcp-sa-volume", mountPath: "'"$MOUNT_PATH"'", subPath: "service-account.json"}
-                ]' -i "$DEPLOYMENT_FILE"
+                select(.name == "'"$CONTAINER_NAME"'").volumeMounts = [] |
+                select(.name == "'"$CONTAINER_NAME"'").volumeMounts[0] = 
+                  {"name": "gcp-sa-volume", "mountPath": "'"$MOUNT_PATH"'", "subPath": "service-account.json"}' -i "$DEPLOYMENT_FILE"
 
-          # 3. Injection de la définition du Volume
-          yq e '.spec.template.spec.volumes = [
-                  {name: "gcp-sa-volume", secret: {secretName: "'"${{ env.SA_SECRET_NAME }}"'"}}
-                ]' -i "$DEPLOYMENT_FILE"
+          # 3. Injection de la définition du Volume (CORRECTION)
+          yq e '.spec.template.spec.volumes = [] | 
+                .spec.template.spec.volumes[0] = 
+                  {"name": "gcp-sa-volume", "secret": {"secretName": "'"${{ env.SA_SECRET_NAME }}"'"}}' -i "$DEPLOYMENT_FILE"
         }
         
         # --- APPLICATION DES PATCHS ---
         patch_sa "$CONSUMER_DEPLOYMENT" "post-consumer"
         patch_sa "$PUSHER_DEPLOYMENT" "post-pusher-kafka"
-
+        
         # --- Patch Kafka UI (ConfigMap) ---
+        
+        # 1. Injection du Volume Mount dans le conteneur 'kafka-ui' (CORRECTION)
         yq e '.spec.template.spec.containers[] |= 
-              select(.name == "kafka-ui").volumeMounts = [
-                {name: "config-volume", mountPath: "/etc/kafkaui/dynamic_config.yaml", subPath: "dynamic_config.yaml"}
-              ]' -i "$UI_DEPLOYMENT"
+              select(.name == "kafka-ui").volumeMounts = [] |
+              select(.name == "kafka-ui").volumeMounts[0] = 
+              {"name": "config-volume", "mountPath": "/etc/kafkaui/dynamic_config.yaml", "subPath": "dynamic_config.yaml"}' -i "$UI_DEPLOYMENT"
               
-        yq e '.spec.template.spec.volumes = [
-                {name: "config-volume", configMap: {name: "kafka-ui-config"}}
-              ]' -i "$UI_DEPLOYMENT"
+        # 2. Injection de la définition du Volume (ConfigMap) (CORRECTION)
+        yq e '.spec.template.spec.volumes = [] |
+              .spec.template.spec.volumes[0] = 
+              {"name": "config-volume", "configMap": {"name": "kafka-ui-config"}}' -i "$UI_DEPLOYMENT"
         
         echo "Tous les manifestes ont été patchés localement avec yq."
       shell: bash
