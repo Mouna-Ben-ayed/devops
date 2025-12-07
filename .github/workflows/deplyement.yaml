@@ -15,7 +15,7 @@ env:
   VM_IP: 34.79.223.105
   # L'utilisateur SSH
   VM_USER: mouna_gcp
-  # Le port local sur lequel l'API Kind écoute (déduit de netstat)
+  # Le port local sur lequel l'API Kind écoute
   API_PORT: 40675 
   
 jobs:
@@ -57,7 +57,7 @@ jobs:
         context: ./post_pusher 
         file: ./post_pusher/Dockerfile
         push: true
-        tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher:${{ github.sha }}
+        tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher-kafka:${{ github.sha }} # Correction: Le nom du conteneur est post-pusher-kafka
 
   deploy:
     runs-on: ubuntu-latest
@@ -84,7 +84,6 @@ jobs:
     - name: Set Kubeconfig
       run: |
         mkdir -p ~/.kube
-        # Le KUBECONFIG doit pointer sur 127.0.0.1:40675 (car Kind écoute en local)
         echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
       shell: bash
 
@@ -94,30 +93,22 @@ jobs:
         SSH_KEY: ${{ secrets.GCP_SSH_KEY }}
       run: |
         echo "Configuration du tunnel SSH vers $VM_IP:$API_PORT"
-        
-        # 1. Configurer la clé privée SSH
         mkdir -p ~/.ssh
         echo "$SSH_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        
-        # 2. Ajouter l'IP du serveur aux hôtes connus
         ssh-keyscan -H ${{ env.VM_IP }} >> ~/.ssh/known_hosts
-        
-        # 3. Établir le tunnel SSH en arrière-plan (Port Forwarding)
-        # Ceci mappe le port 40675 du runner vers 127.0.0.1:40675 sur la VM.
-        ssh -i ~/.ssh/id_rsa -N -L ${{ env.API_PORT }}:127.0.0.1:${{ env.API_PORT }} ${{ env.VM_USER }}@${{ env.VM_IP }} &
-        
-        # Attendre un court instant pour que le tunnel soit actif
+        # -N : Ne pas exécuter de commande distante. -L : Port Forwarding
+        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -N -L ${{ env.API_PORT }}:127.0.0.1:${{ env.API_PORT }} ${{ env.VM_USER }}@${{ env.VM_IP }} &
         sleep 5
       shell: bash
 
     # --- 4. EXÉCUTION DES COMMANDES KUBECTL (via le Tunnel) ---
     - name: Wait for Kubernetes API to be Ready (via Tunnel)
       run: |
-        # Le KUBECONFIG utilise 127.0.0.1, qui est intercepté par le tunnel SSH.
         kubectl wait --for=condition=ready node --all --timeout=300s
       shell: bash
 
+    # 5. Création du Secret d'Authentification GCP (pour le code d'application)
     - name: Create/Update Secret for Service Account
       run: |
         kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
@@ -125,6 +116,17 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
       shell: bash
 
+    # 6. Création du Secret d'Authentification Docker (pour le Pull GHCR)
+    - name: 🔑 Create GHCR Image Pull Secret
+      run: |
+        kubectl create secret docker-registry ghcr-pull-secret \
+          --docker-server=ghcr.io \
+          --docker-username=${{ github.repository_owner }} \
+          --docker-password=${{ secrets.GITHUB_TOKEN }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+      shell: bash
+
+    # 7. Patch des Manifestes
     - name: Patch Manifestes with yq
       run: |
         SHA_TAG=${{ github.sha }}
@@ -132,29 +134,36 @@ jobs:
         REGISTRY_PATH="${{ env.REGISTRY }}/$OWNER_LC"
         SA_SECRET="${{ env.SA_SECRET_NAME }}"
         
-        CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml" # Correction de la faute de frappe
-        PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"     # Correction de la faute de frappe
-        UI_DEPLOYMENT="ui/deployment.yaml"                 # Correction de la faute de frappe
+        # Correction des fautes de frappe 'deployement.yaml' -> 'deployment.yaml'
+        CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml"
+        PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"
+        UI_DEPLOYMENT="ui/deployment.yaml" 
         MOUNT_PATH='/service-account.json' 
         
         patch_sa() {
           DEPLOYMENT_FILE=$1
           CONTAINER_NAME=$2
           
-          # 1. Mise à jour de l'image (Ne change pas)
+          # 1. Mise à jour de l'image et imagePullPolicy: IfNotPresent
           yq e '.spec.template.spec.containers[] |= 
-                select(.name == "'"$CONTAINER_NAME"'").image = "'"$REGISTRY_PATH/$CONTAINER_NAME:$SHA_TAG"'"' -i "$DEPLOYMENT_FILE"
+                select(.name == "'"$CONTAINER_NAME"'").image = "'"$REGISTRY_PATH/$CONTAINER_NAME:$SHA_TAG"'" |
+                select(.name == "'"$CONTAINER_NAME"'").imagePullPolicy = "IfNotPresent"' -i "$DEPLOYMENT_FILE"
                 
-          # 2. Injection du Volume Mount (CORRECTION)
+          # 2. Injection du Volume Mount (Correction de la syntaxe YAML)
           yq e '.spec.template.spec.containers[] |= 
                 select(.name == "'"$CONTAINER_NAME"'").volumeMounts = [] |
                 select(.name == "'"$CONTAINER_NAME"'").volumeMounts[0] = 
                   {"name": "gcp-sa-volume", "mountPath": "'"$MOUNT_PATH"'", "subPath": "service-account.json"}' -i "$DEPLOYMENT_FILE"
 
-          # 3. Injection de la définition du Volume (CORRECTION)
+          # 3. Injection de la définition du Volume (Correction de la syntaxe YAML)
           yq e '.spec.template.spec.volumes = [] | 
                 .spec.template.spec.volumes[0] = 
                   {"name": "gcp-sa-volume", "secret": {"secretName": "'"${{ env.SA_SECRET_NAME }}"'"}}' -i "$DEPLOYMENT_FILE"
+
+          # 4. Injection du Pull Secret (Correction de la syntaxe YAML)
+          yq e '.spec.template.spec.imagePullSecrets = [] | 
+                .spec.template.spec.imagePullSecrets[0] = 
+                  {"name": "ghcr-pull-secret"}' -i "$DEPLOYMENT_FILE"
         }
         
         # --- APPLICATION DES PATCHS ---
@@ -162,14 +171,13 @@ jobs:
         patch_sa "$PUSHER_DEPLOYMENT" "post-pusher-kafka"
         
         # --- Patch Kafka UI (ConfigMap) ---
-        
-        # 1. Injection du Volume Mount dans le conteneur 'kafka-ui' (CORRECTION)
+        # 1. Injection du Volume Mount dans le conteneur 'kafka-ui'
         yq e '.spec.template.spec.containers[] |= 
               select(.name == "kafka-ui").volumeMounts = [] |
               select(.name == "kafka-ui").volumeMounts[0] = 
               {"name": "config-volume", "mountPath": "/etc/kafkaui/dynamic_config.yaml", "subPath": "dynamic_config.yaml"}' -i "$UI_DEPLOYMENT"
               
-        # 2. Injection de la définition du Volume (ConfigMap) (CORRECTION)
+        # 2. Injection de la définition du Volume (ConfigMap)
         yq e '.spec.template.spec.volumes = [] |
               .spec.template.spec.volumes[0] = 
               {"name": "config-volume", "configMap": {"name": "kafka-ui-config"}}' -i "$UI_DEPLOYMENT"
@@ -177,9 +185,11 @@ jobs:
         echo "Tous les manifestes ont été patchés localement avec yq."
       shell: bash
 
+    # 8. Déploiement
     - name: Deploy to Kubernetes
       run: |
         echo "--- Applying Kafka Infrastructure ---"
+        # Correction du nom de fichier: config.yaml -> configmap.yaml
         kubectl apply -f kafka/configmap.yaml
         kubectl apply -f kafka/service.yaml
         kubectl apply -f kafka/deployment.yaml
