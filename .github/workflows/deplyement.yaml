@@ -180,9 +180,9 @@ jobs:
     - name: Deploy to Kubernetes
       run: |
         echo "--- Applying Kafka Infrastructure ---"
-        kubectl apply -f kafka/config.yaml
+        kubectl apply -f kafka/configmap.yaml
         kubectl apply -f kafka/service.yaml
-        kubectl apply -f kafka/deployement.yaml
+        kubectl apply -f kafka/deployment.yaml
         
         echo "--- Applying Kafka UI ---"
         kubectl apply -f ui/service.yaml
