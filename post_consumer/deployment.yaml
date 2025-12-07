@@ -17,7 +17,7 @@ spec:
       containers:
       - name: post-consumer
         image: post-consumer:latest
-        imagePullPolicy: Never
+        imagePullPolicy: Always
         args:
           - "--kafka_host"
           - "kafka-broker-service:9092"

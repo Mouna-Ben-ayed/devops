@@ -15,5 +15,5 @@ spec:
       containers:
       - name: post-pusher-kafka
         image: 2024_kubernetes_post_pusher:latest
-        imagePullPolicy: Never
+        imagePullPolicy: Always
         command: ["python", "main.py", "--multiple", "--kafka_host=kafka-broker-service:9092"]
