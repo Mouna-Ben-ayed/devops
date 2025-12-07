@@ -8,16 +8,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Laissez IMAGE_OWNER tel quel, la conversion en minuscules se fait dans les étapes
-  IMAGE_OWNER: ${{ github.repository_owner }} 
+  IMAGE_OWNER: ${{ github.repository_owner }}
   SA_SECRET_NAME: gcp-sa-secret
-  # L'IP publique de votre VM GCP
   VM_IP: 34.79.223.105
-  # L'utilisateur SSH
   VM_USER: mouna_gcp
-  # Le port local sur lequel l'API Kind écoute
-  API_PORT: 40675 
-  
+  API_PORT: 40675
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -29,11 +25,9 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # --- 1. GESTION DU NOMMAGE DOCKER (Minuscules) ---
     - name: ⚙️ Set Lowercase Owner Name
       id: lowercase_owner
       run: |
-        # Convertit le nom du propriétaire en minuscules pour le référentiel Docker
         echo "owner_lc=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
     - name: Login to GitHub Container Registry
@@ -41,7 +35,7 @@ jobs:
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ env.IMAGE_OWNER }}
-        password: ${{ secrets.GITHUB_TOKEN }} 
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build and Push post-consumer image
       uses: docker/build-push-action@v5
@@ -54,75 +48,59 @@ jobs:
     - name: Build and Push post-pusher image
       uses: docker/build-push-action@v5
       with:
-        context: ./post_pusher 
+        context: ./post_pusher
         file: ./post_pusher/Dockerfile
         push: true
-        # Assurez-vous que le nom ici correspond au nom de conteneur dans le manifeste
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher-kafka:${{ github.sha }}
 
   deploy:
     runs-on: ubuntu-latest
     needs: build-and-push
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
-    # --- 2. GESTION DU NOMMAGE DOCKER (Pour le Patching) ---
+
     - name: ⚙️ Set Lowercase Owner Name for Deployment
       id: lowercase_owner_deploy
       run: |
         echo "owner_lc=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-    - name: Configure Kubectl and Tools
+    - name: Configure Kubectl
       uses: azure/setup-kubectl@v3
       with:
         version: 'latest'
-        
+
     - name: Install yq (YAML Processor)
-      # Utilisation de l'installation par défaut pour éviter les problèmes snap
       run: |
         wget https://github.com/mikefarah/yq/releases/download/v4.40.5/yq_linux_amd64 -O /usr/local/bin/yq
         chmod +x /usr/local/bin/yq
-    
+
     - name: Set Kubeconfig
       run: |
         mkdir -p ~/.kube
         echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
-      shell: bash
 
-    # --- 3. MISE EN PLACE DU TUNNEL SSH ---
     - name: 🔐 Setup SSH Tunnel to VM API
       env:
         SSH_KEY: ${{ secrets.GCP_SSH_KEY }}
       run: |
-        echo "Configuration du tunnel SSH vers $VM_IP:$API_PORT"
         mkdir -p ~/.ssh
-        # Configuration robuste de la clé SSH
         echo "$SSH_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        # Ajout de l'hôte connu pour éviter les prompts
         ssh-keyscan -H ${{ env.VM_IP }} >> ~/.ssh/known_hosts
-        # Établir le tunnel
         ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -N -L ${{ env.API_PORT }}:127.0.0.1:${{ env.API_PORT }} ${{ env.VM_USER }}@${{ env.VM_IP }} &
         sleep 5
-      shell: bash
 
-    # --- 4. EXÉCUTION DES COMMANDES KUBECTL (via le Tunnel) ---
-    - name: Wait for Kubernetes API to be Ready (via Tunnel)
-      run: |
-        kubectl wait --for=condition=ready node --all --timeout=300s
-      shell: bash
+    - name: Wait for Kubernetes API
+      run: kubectl wait --for=condition=ready node --all --timeout=300s
 
-    # 5. Création du Secret d'Authentification GCP
     - name: Create/Update Secret for Service Account (GCP)
       run: |
         kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
           --from-literal=service-account.json='${{ secrets.SA_JSON }}' \
           --dry-run=client -o yaml | kubectl apply -f -
-      shell: bash
 
-    # 6. Création du Secret d'Authentification Docker (GHCR)
     - name: 🔑 Create GHCR Image Pull Secret
       run: |
         kubectl create secret docker-registry ghcr-pull-secret \
@@ -130,77 +108,57 @@ jobs:
           --docker-username=${{ github.repository_owner }} \
           --docker-password=${{ secrets.GITHUB_TOKEN }} \
           --dry-run=client -o yaml | kubectl apply -f -
-      shell: bash
 
-    # 7. Patch des Manifestes
-    - name: Patch Manifestes with yq
+    - name: Patch Deployment Manifests
       run: |
         SHA_TAG=${{ github.sha }}
-        OWNER_LC="${{ steps.lowercase_owner_deploy.outputs.owner_lc }}" 
-        REGISTRY_PATH="${{ env.REGISTRY }}/$OWNER_LC"
+        OWNER_LC="${{ steps.lowercase_owner_deploy.outputs.owner_lc }}"
+        REGISTRY_PATH="ghcr.io/$OWNER_LC"
         SA_SECRET="${{ env.SA_SECRET_NAME }}"
-        
+
         CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml"
         PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"
-        UI_DEPLOYMENT="ui/deployment.yaml" 
-        MOUNT_PATH='/service-account.json' 
-        
+        UI_DEPLOYMENT="ui/deployment.yaml"
+        MOUNT_PATH='/service-account.json'
+
         patch_sa() {
-          DEPLOYMENT_FILE=$1
-          CONTAINER_NAME=$2
-          
-          # 1. Mise à jour de l'image et imagePullPolicy: IfNotPresent
-          yq e '.spec.template.spec.containers[] |= 
-                select(.name == "'"$CONTAINER_NAME"'").image = "'"$REGISTRY_PATH/$CONTAINER_NAME:$SHA_TAG"'" |
-                select(.name == "'"$CONTAINER_NAME"'").imagePullPolicy = "IfNotPresent"' -i "$DEPLOYMENT_FILE"
-                
-          # 2. Injection du Volume Mount (Ajout au tableau 'volumeMounts')
-          yq e '.spec.template.spec.containers[] |= 
-                select(.name == "'"$CONTAINER_NAME"'").volumeMounts += 
-                  [{"name": "gcp-sa-volume", "mountPath": "'"$MOUNT_PATH"'", "subPath": "service-account.json"}]' -i "$DEPLOYMENT_FILE"
+          FILE=$1
+          CONTAINER=$2
 
-          # 3. Injection de la définition du Volume (Ajout au tableau 'volumes')
-          yq e '.spec.template.spec.volumes += 
-                [{"name": "gcp-sa-volume", "secret": {"secretName": "'"${{ env.SA_SECRET_NAME }}"'"}}]' -i "$DEPLOYMENT_FILE"
+          # Update image and pull policy
+          yq e -i '.spec.template.spec.containers[] |= select(.name=="'"$CONTAINER"'").image = "'"$REGISTRY_PATH/$CONTAINER:$SHA_TAG"'" |
+                  select(.name=="'"$CONTAINER"'").imagePullPolicy = "IfNotPresent"' $FILE
 
-          # 4. Injection du Pull Secret (Définition de l'ImagePullSecrets)
-          yq e '.spec.template.spec.imagePullSecrets = 
-                [{"name": "ghcr-pull-secret"}]' -i "$DEPLOYMENT_FILE"
+          # Add volume mount for GCP secret
+          yq e -i '.spec.template.spec.containers[] |= select(.name=="'"$CONTAINER"'").volumeMounts += [{"name":"gcp-sa-volume","mountPath":"'"$MOUNT_PATH"'","subPath":"service-account.json"}]' $FILE
+
+          # Add volume definition
+          yq e -i '.spec.template.spec.volumes += [{"name":"gcp-sa-volume","secret":{"secretName":"'"$SA_SECRET"'"}}]' $FILE
+
+          # Add imagePullSecrets
+          yq e -i '.spec.template.spec.imagePullSecrets += [{"name":"ghcr-pull-secret"}]' $FILE
         }
-        
-        # --- APPLICATION DES PATCHS ---
+
         patch_sa "$CONSUMER_DEPLOYMENT" "post-consumer"
         patch_sa "$PUSHER_DEPLOYMENT" "post-pusher-kafka"
-        
-        # --- Patch Kafka UI (ConfigMap) ---
-        
-        # 1. Injection du Volume Mount dans le conteneur 'kafka-ui'
-        yq e '.spec.template.spec.containers[] |= 
-              select(.name == "kafka-ui").volumeMounts += 
-              [{"name": "config-volume", "mountPath": "/etc/kafkaui/dynamic_config.yaml", "subPath": "dynamic_config.yaml"}]' -i "$UI_DEPLOYMENT"
-              
-        # 2. Injection de la définition du Volume (ConfigMap)
-        yq e '.spec.template.spec.volumes += 
-              [{"name": "config-volume", "configMap": {"name": "kafka-ui-config"}}]' -i "$UI_DEPLOYMENT"
-        
-        echo "Tous les manifestes ont été patchés localement avec yq."
-      shell: bash
 
-    # 8. Déploiement
+        # Patch Kafka UI ConfigMap volume
+        yq e -i '.spec.template.spec.containers[] |= select(.name=="kafka-ui").volumeMounts += [{"name":"config-volume","mountPath":"/etc/kafkaui/dynamic_config.yaml","subPath":"dynamic_config.yaml"}]' $UI_DEPLOYMENT
+        yq e -i '.spec.template.spec.volumes += [{"name":"config-volume","configMap":{"name":"kafka-ui-config"}}]' $UI_DEPLOYMENT
+
     - name: Deploy to Kubernetes
       run: |
         echo "--- Applying Kafka Infrastructure ---"
-        kubectl apply -f kafka/configmap.yaml # Correction du nom de fichier
+        kubectl apply -f kafka/configmap.yaml
         kubectl apply -f kafka/service.yaml
-        kubectl apply -f kafka/deployment.yaml # Correction du nom de fichier
-        
+        kubectl apply -f kafka/deployment.yaml
+
         echo "--- Applying Kafka UI ---"
         kubectl apply -f ui/service.yaml
-        kubectl apply -f ui/deployment.yaml 
-        
-        echo "--- Applying Application Deployments (Pusher/Consumer) ---"
+        kubectl apply -f ui/deployment.yaml
+
+        echo "--- Applying Application Deployments ---"
         kubectl apply -f post_consumer/deployment.yaml
         kubectl apply -f post_pusher/deployment.yaml
-        
+
         echo "Deployment complete."
-      shell: bash
