@@ -1,4 +1,4 @@
-name: CI/CD Kubernetes Deployment (Secure GCP Access - FINAL)
+name: CI/CD Kubernetes Deployment (Secure GCP Access - FINAL SSH TUNNEL)
 
 on:
   push:
@@ -8,9 +8,15 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Laissez IMAGE_OWNER tel quel, mais utilisez une variable locale en minuscules pour les tags.
+  # Laissez IMAGE_OWNER tel quel, la conversion en minuscules se fait dans les étapes
   IMAGE_OWNER: ${{ github.repository_owner }} 
   SA_SECRET_NAME: gcp-sa-secret
+  # L'IP publique de votre VM GCP
+  VM_IP: 34.79.223.105
+  # L'utilisateur SSH
+  VM_USER: mouna_gcp
+  # Le port local sur lequel l'API Kind écoute (déduit de netstat)
+  API_PORT: 40675 
   
 jobs:
   build-and-push:
@@ -23,8 +29,8 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # --- CORRECTION DU TAG GHCR (MAJUSCULES INTERDITES) ---
-    - name: Set Lowercase Owner Name
+    # --- 1. GESTION DU NOMMAGE DOCKER (Minuscules) ---
+    - name: ⚙️ Set Lowercase Owner Name
       id: lowercase_owner
       run: |
         # Convertit le nom du propriétaire en minuscules pour le référentiel Docker
@@ -41,7 +47,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: ./post_consumer
-        file: ./post_consumer/Dockerfile # Nom de fichier corrigé
+        file: ./post_consumer/Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-consumer:${{ github.sha }}
 
@@ -49,7 +55,7 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: ./post_pusher 
-        file: ./post_pusher/Dockerfile # Nom de fichier corrigé
+        file: ./post_pusher/Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher:${{ github.sha }}
 
@@ -61,8 +67,8 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    # --- CORRECTION DU TAG GHCR (POUR LE PATCHING YQ) ---
-    - name: Set Lowercase Owner Name for Deployment
+    # --- 2. GESTION DU NOMMAGE DOCKER (Pour le Patching) ---
+    - name: ⚙️ Set Lowercase Owner Name for Deployment
       id: lowercase_owner_deploy
       run: |
         echo "owner_lc=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
@@ -78,13 +84,37 @@ jobs:
     - name: Set Kubeconfig
       run: |
         mkdir -p ~/.kube
+        # Le KUBECONFIG doit pointer sur 127.0.0.1:40675 (car Kind écoute en local)
         echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
       shell: bash
 
-    # --- ÉTAPE AJOUTÉE : ATTENDRE L'API ---
-    - name: Wait for Kubernetes API to be Ready
+    # --- 3. MISE EN PLACE DU TUNNEL SSH (Résout Connection Refused) ---
+    - name: 🔐 Setup SSH Tunnel to VM API
+      env:
+        SSH_KEY: ${{ secrets.GCP_SSH_KEY }}
       run: |
-        # Attendre que le nœud principal soit prêt, garantissant l'accessibilité de l'API
+        echo "Configuration du tunnel SSH vers $VM_IP:$API_PORT"
+        
+        # 1. Configurer la clé privée SSH
+        mkdir -p ~/.ssh
+        echo "$SSH_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        
+        # 2. Ajouter l'IP du serveur aux hôtes connus
+        ssh-keyscan -H ${{ env.VM_IP }} >> ~/.ssh/known_hosts
+        
+        # 3. Établir le tunnel SSH en arrière-plan (Port Forwarding)
+        # Ceci mappe le port 40675 du runner vers 127.0.0.1:40675 sur la VM.
+        ssh -i ~/.ssh/id_rsa -N -L ${{ env.API_PORT }}:127.0.0.1:${{ env.API_PORT }} ${{ env.VM_USER }}@${{ env.VM_IP }} &
+        
+        # Attendre un court instant pour que le tunnel soit actif
+        sleep 5
+      shell: bash
+
+    # --- 4. EXÉCUTION DES COMMANDES KUBECTL (via le Tunnel) ---
+    - name: Wait for Kubernetes API to be Ready (via Tunnel)
+      run: |
+        # Le KUBECONFIG utilise 127.0.0.1, qui est intercepté par le tunnel SSH.
         kubectl wait --for=condition=ready node --all --timeout=300s
       shell: bash
 
@@ -132,13 +162,11 @@ jobs:
         patch_sa "$PUSHER_DEPLOYMENT" "post-pusher-kafka"
 
         # --- Patch Kafka UI (ConfigMap) ---
-        # 1. Injection du Volume Mount dans le conteneur 'kafka-ui'
         yq e '.spec.template.spec.containers[] |= 
               select(.name == "kafka-ui").volumeMounts = [
                 {name: "config-volume", mountPath: "/etc/kafkaui/dynamic_config.yaml", subPath: "dynamic_config.yaml"}
               ]' -i "$UI_DEPLOYMENT"
               
-        # 2. Injection de la définition du Volume (ConfigMap)
         yq e '.spec.template.spec.volumes = [
                 {name: "config-volume", configMap: {name: "kafka-ui-config"}}
               ]' -i "$UI_DEPLOYMENT"
