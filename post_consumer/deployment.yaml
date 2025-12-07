@@ -22,6 +22,11 @@ spec:
           args:
             - "--kafka_host"
             - "kafka-broker-service:9092"
+          env:
+          - name: BQ_DATASET
+            value: "data_devops"
+          - name: BQ_TABLE
+            value: "posts"
           volumeMounts:
             - name: gcp-sa-volume
               mountPath: /service-account.json
