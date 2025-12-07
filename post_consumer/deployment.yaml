@@ -16,8 +16,19 @@ spec:
     spec:
       containers:
       - name: post-consumer
-        image: post-consumer:latest
+        image: ghcr.io/mouna-ben-ayed/post-consumer:<SHA_TAG>
         imagePullPolicy: Always
+        command: ["python", "main.py"]   # exécute python main.py
         args:
           - "--kafka_host"
           - "kafka-broker-service:9092"
+        volumeMounts:
+          - name: gcp-sa-volume
+            mountPath: /service-account.json
+            subPath: service-account.json
+      volumes:
+        - name: gcp-sa-volume
+          secret:
+            secretName: gcp-sa-secret
+      imagePullSecrets:
+        - name: ghcr-pull-secret
