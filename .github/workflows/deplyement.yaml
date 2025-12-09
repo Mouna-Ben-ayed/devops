@@ -4,53 +4,72 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # Permet de lancer manuellement
+  workflow_dispatch:
 
 env:
-  # Tags locaux pour les images (pas de ghcr.io)
   CONSUMER_IMAGE: post-consumer:latest
   PUSHER_IMAGE: post-pusher-kafka:latest
   SA_SECRET_NAME: gcp-sa-secret
+  KIND_CLUSTER_NAME: devops-kind-cluster # Nom par défaut pour le cluster Kind
   
 jobs:
   build-and-deploy-on-vm:
-    runs-on: self-hosted
+    runs-on: self-hosted # Utilisation du label correct
     
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. Construction des Images (sur la VM) ---
+      # --- 1. CONFIGURATION DU CLUSTER KIND (NOUVELLE SECTION) ---
       
-      # Build & Load Post-Consumer Image
+      - name: ⚙️ Setup Kind and Start Cluster
+        run: |
+          # Le runner doit avoir 'kind' installé. Si non, l'installer ici.
+          # kind create cluster crée le cluster en utilisant le fichier config.yaml
+          kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
+          
+          # Récupère le KUBECONFIG de Kind pour le runner
+          KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
+          
+          # Définit la variable d'environnement pour l'étape suivante
+          echo "KUBECONFIG_CONTEXT=$KIND_KUBECONFIG" >> $GITHUB_ENV
+
+      - name: Configure Kubectl (Installer l'exécutable)
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: 🔗 Set K8s Context for Azure Actions
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          # Passe le KUBECONFIG généré par Kind
+          kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
+          # Le nom de contexte par défaut pour Kind est 'kind-NOM-DU-CLUSTER'
+          cluster-context: kind-${{ env.KIND_CLUSTER_NAME }}
+          
+      # --- 2. CONSTRUCTION DES IMAGES (Aucun changement) ---
+      
       - name: 🔨 Build and Load Consumer Image
         uses: docker/build-push-action@v5
         with:
           context: ./post_consumer
           file: ./post_consumer/Dockerfile
           push: false 
-          load: true # Charge l'image dans le démon Docker de la VM
+          load: true 
           tags: ${{ env.CONSUMER_IMAGE }}
           
-      # Build & Load Post-Pusher Image
       - name: 🔨 Build and Load Pusher Image
         uses: docker/build-push-action@v5
         with:
           context: ./post_pusher
           file: ./post_pusher/Dockerfile
           push: false
-          load: true # Charge l'image dans le démon Docker de la VM
+          load: true
           tags: ${{ env.PUSHER_IMAGE }}
 
-      # --- 2. Configuration & Secrets Kubernetes ---
+      # --- 3. DÉPLOIEMENT (Utilisera le contexte Kind défini) ---
 
-      # Configure Kubectl (S'assure que kubectl est utilisable sur la VM)
-      - name: Configure Kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'latest'
-
-      # Création/Mise à jour du Secret pour le Compte de Service GCP (Remplace kubectl create secret)
       - name: 🔑 Create/Update Secret for Service Account (GCP)
         uses: azure/k8s-create-secret@v4
         with:
@@ -60,9 +79,6 @@ jobs:
           string-data:  |
             service-account.json=${{ secrets.SA_JSON }}
 
-      # --- 3. Déploiement Kubernetes (sur la VM) ---
-      
-      # Déploiement de l'Infrastructure Kafka
       - name: 🚀 Deploy Kafka Infrastructure
         uses: azure/k8s-deploy@v4
         with:
@@ -72,7 +88,6 @@ jobs:
             kafka/service.yaml
             kafka/deployment.yaml
 
-      # Déploiement de l'Interface Utilisateur (UI)
       - name: 🚀 Deploy Kafka UI
         uses: azure/k8s-deploy@v4
         with:
@@ -81,10 +96,6 @@ jobs:
             ui/service.yaml
             ui/deployment.yaml
 
-
-      # Déploiement des Applications (Consumer & Pusher)
-      # L'action k8s-deploy met automatiquement à jour les tags des images 
-      # dans les manifests avant l'application (Remplace yq/patch)
       - name: 🚀 Deploy Application Deployments
         uses: azure/k8s-deploy@v4
         with:
