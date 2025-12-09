@@ -75,15 +75,13 @@ jobs:
 
       # --- 3. DÉPLOIEMENT KUBERNETES ---
 
-      # 4. CORRECTION 4: Correction de la syntaxe YAML pour string-data (utiliser ':' au lieu de '=').
-      - name: 🔑 Create/Update Secret for Service Account (GCP)
-        uses: azure/k8s-create-secret@v4
-        with:
-          namespace: default
-          secret-type: 'generic'
-          secret-name: ${{ env.SA_SECRET_NAME }}
-          string-data:  |
-            service-account.json: ${{ secrets.SA_JSON }}
+      - name: 🔑 Create/Update Secret for Service Account (GCP) (Alternative)
+        run: |
+          # Crée le secret directement avec kubectl en utilisant le contenu du secret GitHub
+          kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
+            --from-literal=service-account.json="${{ secrets.SA_JSON }}" \
+            --namespace=default \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: 🚀 Deploy Kafka Infrastructure
         uses: azure/k8s-deploy@v4
