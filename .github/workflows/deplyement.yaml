@@ -14,10 +14,7 @@ env:
   
 jobs:
   build-and-deploy-on-vm:
-    runs-on: 
-      # Cible votre runner spécifique sur la VM GCP
-      - self-hosted
-      - gcp-vm-runner 
+    runs-on: self-hosted
     
     steps:
       - name: 📥 Checkout Code
