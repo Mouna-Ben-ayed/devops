@@ -24,15 +24,14 @@ jobs:
       
       - name: ⚙️ Setup Kind and Start Cluster
         run: |
-          # Le runner doit avoir 'kind' installé. Si non, l'installer ici.
-          # kind create cluster crée le cluster en utilisant le fichier config.yaml
           kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
           
-          # Récupère le KUBECONFIG de Kind pour le runner
+          # 🌟 CORRECTION ICI : Utiliser un délimiteur (EOF) pour l'écriture multi-lignes
           KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
           
-          # Définit la variable d'environnement pour l'étape suivante
-          echo "KUBECONFIG_CONTEXT=$KIND_KUBECONFIG" >> $GITHUB_ENV
+          echo 'KUBECONFIG_CONTEXT<<EOF' >> $GITHUB_ENV
+          echo "$KIND_KUBECONFIG" >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
 
       - name: Configure Kubectl (Installer l'exécutable)
         uses: azure/setup-kubectl@v3
