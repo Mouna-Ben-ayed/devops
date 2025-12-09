@@ -14,26 +14,46 @@ spec:
       labels:
         app: post-consumer
     spec:
+      # ⚠️ Le service account est nécessaire pour que le Pod puisse lire le secret.
+      # Si un ServiceAccount par défaut est suffisant, cette ligne est facultative.
+      # serviceAccountName: default 
+      
       containers:
         - name: post-consumer
-          image: ghcr.io/mouna-ben-ayed/post-consumer:<SHA_TAG>
-          imagePullPolicy: Always
+          # 2. CORRECTION IMAGE : Utilisation du tag local de la variable d'environnement
+          # Assurez-vous que le pipeline injecte bien cette variable (fait via azure/k8s-deploy@v4)
+          image: post-consumer:latest 
+          # 1. CORRECTION PULL POLICY : Utiliser IfNotPresent pour l'image locale Kind
+          imagePullPolicy: IfNotPresent
+          
           command: ["python", "main.py"]
           args:
             - "--kafka_host"
             - "kafka-broker-service:9092"
+            
           env:
+          # 4. AJOUT CLÉ GCP : Indiquer à l'application où trouver la clé JSON du SA
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: /app/secrets/service-account.json # <-- Le chemin du fichier monté
           - name: BQ_DATASET
             value: "data_devops"
           - name: BQ_TABLE
             value: "posts"
+            
           volumeMounts:
             - name: gcp-sa-volume
-              mountPath: /service-account.json
-              subPath: service-account.json
+              # 3. CORRECTION MOUNT PATH : Monter dans un sous-chemin sûr
+              mountPath: /app/secrets/
+              readOnly: true
+          
       volumes:
         - name: gcp-sa-volume
           secret:
-            secretName: gcp-sa-secret
-      imagePullSecrets:
-        - name: ghcr-pull-secret
+            secretName: gcp-sa-secret # Correspond au Secret créé par kubectl create secret
+            # items:
+            # - key: service-account.json
+            #   path: service-account.json # Ceci est implicite ou peut être ajouté pour plus de clarté
+            
+      # 5. SUPPRESSION : Cette section n'est pas nécessaire pour les images locales Kind
+      # imagePullSecrets:
+      #   - name: ghcr-pull-secret

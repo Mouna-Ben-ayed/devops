@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: post-pusher-kafka
+  labels:
+    app: post-pusher-kafka
 spec:
   replicas: 1
   selector:
@@ -14,6 +16,10 @@ spec:
     spec:
       containers:
       - name: post-pusher-kafka
-        image: 2024_kubernetes_post_pusher:latest
-        imagePullPolicy: Always
+        image: post-pusher-kafka:latest
+        imagePullPolicy: IfNotPresent
         command: ["python", "main.py", "--multiple", "--kafka_host=kafka-broker-service:9092"]
+        
+        # Si cette application doit aussi se connecter à GCP, 
+        # vous DEVEZ ajouter la configuration de montage de secret vue précédemment.
+        # Si le pusher est seulement un client Kafka, cette section est suffisante.
