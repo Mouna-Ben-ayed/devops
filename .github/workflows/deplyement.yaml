@@ -84,6 +84,7 @@ jobs:
             ui/service.yaml
             ui/deployment.yaml
 
+
       # Déploiement des Applications (Consumer & Pusher)
       # L'action k8s-deploy met automatiquement à jour les tags des images 
       # dans les manifests avant l'application (Remplace yq/patch)
@@ -94,7 +95,6 @@ jobs:
           manifests: |
             post_consumer/deployment.yaml
             post_pusher/deployment.yaml
-          # Ces images sont utilisées pour patcher le manifeste avant l'application
           images: |
             ${{ env.CONSUMER_IMAGE }}
             ${{ env.PUSHER_IMAGE }}
