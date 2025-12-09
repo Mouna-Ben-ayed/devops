@@ -1,164 +1,103 @@
-name: CI/CD Kubernetes Deployment (Secure GCP Access - FINAL SSH TUNNEL)
+name: CI/CD Deployment - Self-Hosted VM (No Registry)
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  workflow_dispatch: # Permet de lancer manuellement
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_OWNER: ${{ github.repository_owner }}
+  # Tags locaux pour les images (pas de ghcr.io)
+  CONSUMER_IMAGE: post-consumer:latest
+  PUSHER_IMAGE: post-pusher-kafka:latest
   SA_SECRET_NAME: gcp-sa-secret
-  VM_IP: 34.79.223.105
-  VM_USER: mouna_gcp
-  API_PORT: 40675
-
+  
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+  build-and-deploy-on-vm:
+    runs-on: 
+      # Cible votre runner spécifique sur la VM GCP
+      - self-hosted
+      - gcp-vm-runner 
+    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
 
-    - name: ⚙️ Set Lowercase Owner Name
-      id: lowercase_owner
-      run: |
-        echo "owner_lc=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      # --- 1. Construction des Images (sur la VM) ---
+      
+      # Build & Load Post-Consumer Image
+      - name: 🔨 Build and Load Consumer Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./post_consumer
+          file: ./post_consumer/Dockerfile
+          push: false 
+          load: true # Charge l'image dans le démon Docker de la VM
+          tags: ${{ env.CONSUMER_IMAGE }}
+          
+      # Build & Load Post-Pusher Image
+      - name: 🔨 Build and Load Pusher Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./post_pusher
+          file: ./post_pusher/Dockerfile
+          push: false
+          load: true # Charge l'image dans le démon Docker de la VM
+          tags: ${{ env.PUSHER_IMAGE }}
 
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ env.IMAGE_OWNER }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      # --- 2. Configuration & Secrets Kubernetes ---
 
-    - name: Build and Push post-consumer image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./post_consumer
-        file: ./post_consumer/Dockerfile
-        push: true
-        tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-consumer:${{ github.sha }}
+      # Configure Kubectl (S'assure que kubectl est utilisable sur la VM)
+      - name: Configure Kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
 
-    - name: Build and Push post-pusher image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./post_pusher
-        file: ./post_pusher/Dockerfile
-        push: true
-        tags: ${{ env.REGISTRY }}/${{ steps.lowercase_owner.outputs.owner_lc }}/post-pusher-kafka:${{ github.sha }}
+      # Création/Mise à jour du Secret pour le Compte de Service GCP (Remplace kubectl create secret)
+      - name: 🔑 Create/Update Secret for Service Account (GCP)
+        uses: azure/k8s-create-secret@v4
+        with:
+          namespace: default
+          secret-type: 'generic'
+          secret-name: ${{ env.SA_SECRET_NAME }}
+          string-data:  |
+            service-account.json=${{ secrets.SA_JSON }}
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build-and-push
+      # --- 3. Déploiement Kubernetes (sur la VM) ---
+      
+      # Déploiement de l'Infrastructure Kafka
+      - name: 🚀 Deploy Kafka Infrastructure
+        uses: azure/k8s-deploy@v4
+        with:
+          namespace: default
+          manifests: |
+            kafka/configmap.yaml
+            kafka/service.yaml
+            kafka/deployment.yaml
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      # Déploiement de l'Interface Utilisateur (UI)
+      - name: 🚀 Deploy Kafka UI
+        uses: azure/k8s-deploy@v4
+        with:
+          namespace: default
+          manifests: |
+            ui/service.yaml
+            ui/deployment.yaml
 
-    - name: ⚙️ Set Lowercase Owner Name for Deployment
-      id: lowercase_owner_deploy
-      run: |
-        echo "owner_lc=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-
-    - name: Configure Kubectl
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'latest'
-
-    - name: Install yq (YAML Processor)
-      run: |
-        wget https://github.com/mikefarah/yq/releases/download/v4.40.5/yq_linux_amd64 -O /usr/local/bin/yq
-        chmod +x /usr/local/bin/yq
-
-    - name: Set Kubeconfig
-      run: |
-        mkdir -p ~/.kube
-        echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
-
-    - name: 🔐 Setup SSH Tunnel to VM API
-      env:
-        SSH_KEY: ${{ secrets.GCP_SSH_KEY }}
-      run: |
-        mkdir -p ~/.ssh
-        echo "$SSH_KEY" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ env.VM_IP }} >> ~/.ssh/known_hosts
-        ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -N -L ${{ env.API_PORT }}:127.0.0.1:${{ env.API_PORT }} ${{ env.VM_USER }}@${{ env.VM_IP }} &
-        sleep 5
-
-    - name: Wait for Kubernetes API
-      run: kubectl wait --for=condition=ready node --all --timeout=300s
-
-    - name: Create/Update Secret for Service Account (GCP)
-      run: |
-        kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
-          --from-literal=service-account.json='${{ secrets.SA_JSON }}' \
-          --dry-run=client -o yaml | kubectl apply -f -
-
-    - name: 🔑 Create GHCR Image Pull Secret
-      run: |
-        kubectl create secret docker-registry ghcr-pull-secret \
-          --docker-server=ghcr.io \
-          --docker-username=${{ github.repository_owner }} \
-          --docker-password=${{ secrets.GITHUB_TOKEN }} \
-          --dry-run=client -o yaml | kubectl apply -f -
-
-    - name: Patch Deployment Manifests
-      run: |
-        SHA_TAG=${{ github.sha }}
-        OWNER_LC="${{ steps.lowercase_owner_deploy.outputs.owner_lc }}"
-        REGISTRY_PATH="ghcr.io/$OWNER_LC"
-        SA_SECRET="${{ env.SA_SECRET_NAME }}"
-
-        CONSUMER_DEPLOYMENT="post_consumer/deployment.yaml"
-        PUSHER_DEPLOYMENT="post_pusher/deployment.yaml"
-        UI_DEPLOYMENT="ui/deployment.yaml"
-        MOUNT_PATH='/service-account.json'
-
-        patch_sa() {
-          FILE=$1
-          CONTAINER=$2
-
-          # Update image and pull policy
-          yq e -i '.spec.template.spec.containers[] |= select(.name=="'"$CONTAINER"'").image = "'"$REGISTRY_PATH/$CONTAINER:$SHA_TAG"'" |
-                  select(.name=="'"$CONTAINER"'").imagePullPolicy = "IfNotPresent"' $FILE
-
-          # Add volume mount for GCP secret
-          yq e -i '.spec.template.spec.containers[] |= select(.name=="'"$CONTAINER"'").volumeMounts += [{"name":"gcp-sa-volume","mountPath":"'"$MOUNT_PATH"'","subPath":"service-account.json"}]' $FILE
-
-          # Add volume definition
-          yq e -i '.spec.template.spec.volumes += [{"name":"gcp-sa-volume","secret":{"secretName":"'"$SA_SECRET"'"}}]' $FILE
-
-          # Add imagePullSecrets
-          yq e -i '.spec.template.spec.imagePullSecrets += [{"name":"ghcr-pull-secret"}]' $FILE
-        }
-
-        patch_sa "$CONSUMER_DEPLOYMENT" "post-consumer"
-        patch_sa "$PUSHER_DEPLOYMENT" "post-pusher-kafka"
-
-        # Patch Kafka UI ConfigMap volume
-        yq e -i '.spec.template.spec.containers[] |= select(.name=="kafka-ui").volumeMounts += [{"name":"config-volume","mountPath":"/etc/kafkaui/dynamic_config.yaml","subPath":"dynamic_config.yaml"}]' $UI_DEPLOYMENT
-        yq e -i '.spec.template.spec.volumes += [{"name":"config-volume","configMap":{"name":"kafka-ui-config"}}]' $UI_DEPLOYMENT
-
-    - name: Deploy to Kubernetes
-      run: |
-        echo "--- Applying Kafka Infrastructure ---"
-        kubectl apply -f kafka/configmap.yaml
-        kubectl apply -f kafka/service.yaml
-        kubectl apply -f kafka/deployment.yaml
-
-        echo "--- Applying Kafka UI ---"
-        kubectl apply -f ui/service.yaml
-        kubectl apply -f ui/deployment.yaml
-
-        echo "--- Applying Application Deployments ---"
-        kubectl apply -f post_consumer/deployment.yaml
-        kubectl apply -f post_pusher/deployment.yaml
-
-        echo "Deployment complete."
+      # Déploiement des Applications (Consumer & Pusher)
+      # L'action k8s-deploy met automatiquement à jour les tags des images 
+      # dans les manifests avant l'application (Remplace yq/patch)
+      - name: 🚀 Deploy Application Deployments
+        uses: azure/k8s-deploy@v4
+        with:
+          namespace: default
+          manifests: |
+            post_consumer/deployment.yaml
+            post_pusher/deployment.yaml
+          # Ces images sont utilisées pour patcher le manifeste avant l'application
+          images: |
+            ${{ env.CONSUMER_IMAGE }}
+            ${{ env.PUSHER_IMAGE }}
+            
+      - name: ✅ Deployment Complete
+        run: echo "Le déploiement est terminé. Les images sont locales sur la VM."
