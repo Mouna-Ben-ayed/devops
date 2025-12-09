@@ -20,7 +20,7 @@ jobs:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. CONFIGURATION DU CLUSTER KIND (CORRECTION DNS ET KUBECONFIG ESSENTIELLE) ---
+      # --- 1. CONFIGURATION DU CLUSTER KIND (CORRECTION DNS ET KUBECONFIG) ---
       
       - name: ⚙️ Setup Kind and Start Cluster
         run: |
@@ -35,7 +35,6 @@ jobs:
           KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
           
           # 3. CORRECTION DNS : Obtenir l'IP du conteneur Kind depuis l'hôte
-          #    (Résout l'erreur 'no such host'.)
           CONTROL_PLANE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${{ env.KIND_CLUSTER_NAME }}-control-plane")
           
           # 4. Remplacer le nom d'hôte interne par l'adresse IP et le port 6443.
@@ -55,36 +54,30 @@ jobs:
         uses: azure/k8s-set-context@v3
         with:
           method: kubeconfig
-          # Passe le CONTENU du Kubeconfig corrigé
           kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
 
-      # --- 2. BUILD DES IMAGES DOCKER ---
-      - name: 🔨 Build and Load Consumer Image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./post_consumer
-          file: ./post_consumer/Dockerfile
-          push: false
-          load: true
-          tags: ${{ env.CONSUMER_IMAGE }}
+      # --- 2. BUILD ET CHARGEMENT DES IMAGES DOCKER DANS KIND (CORRECTION CRITIQUE) ---
+      # Nous utilisons 'kind load docker-image' pour garantir la disponibilité sur tous les nœuds.
+      
+      - name: 🔨 Build Consumer Image
+        run: docker build -t ${{ env.CONSUMER_IMAGE }} -f ./post_consumer/Dockerfile ./post_consumer
+        
+      - name: 🚀 Load Consumer Image into Kind Cluster
+        run: kind load docker-image ${{ env.CONSUMER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
 
-      - name: 🔨 Build and Load Pusher Image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./post_pusher
-          file: ./post_pusher/Dockerfile
-          push: false
-          load: true
-          tags: ${{ env.PUSHER_IMAGE }}
+      - name: 🔨 Build Pusher Image
+        run: docker build -t ${{ env.PUSHER_IMAGE }} -f ./post_pusher/Dockerfile ./post_pusHER
+        
+      - name: 🚀 Load Pusher Image into Kind Cluster
+        run: kind load docker-image ${{ env.PUSHER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
 
       - name: Wait for Kubernetes API
-        # Kubectl utilise désormais le contexte KUBECONFIG_CONTEXT corrigé
         run: kubectl wait --for=condition=ready node --all --timeout=300s
 
       # --- 3. SECRET GCP (CORRECTION: UTILISATION DE --FROM-FILE) ---
       - name: 🔑 Create/Update GCP Service Account Secret
         run: |
-          # Méthode la plus sûre: Création d'un fichier temporaire
+          # Création d'un fichier temporaire pour gérer le JSON multi-lignes
           echo "${{ secrets.SA_JSON }}" > sa-gcp.json
           
           kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
@@ -113,6 +106,7 @@ jobs:
             ui/deployment.yaml
 
       - name: 🚀 Deploy Application Deployments
+        # Les images seront désormais trouvées sur tous les nœuds grâce à 'kind load'
         uses: azure/k8s-deploy@v4
         with:
           namespace: default
