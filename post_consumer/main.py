@@ -16,7 +16,7 @@ consumer = KafkaConsumer(
 )
 
 # BigQuery
-#os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/service-account.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/service-account.json"
 client = bigquery.Client()
 dataset_id = os.getenv("BQ_DATASET", "kafka_dataset")
 table_id = os.getenv("BQ_TABLE", "posts_table")

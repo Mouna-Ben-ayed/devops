@@ -105,17 +105,25 @@ jobs:
             ui/service.yaml
             ui/deployment.yaml
 
-      - name: 🚀 Deploy Application Deployments
+      - name: 🚀 Deploy Pusher
+        # Les images seront désormais trouvées sur tous les nœuds grâce à 'kind load'
+        uses: azure/k8s-deploy@v4
+        with:
+          namespace: default
+          manifests: |
+            post_pusher/deployment.yaml
+          images: |
+            ${{ env.PUSHER_IMAGE }}
+      - name: 🚀 Deploy Consumer
         # Les images seront désormais trouvées sur tous les nœuds grâce à 'kind load'
         uses: azure/k8s-deploy@v4
         with:
           namespace: default
           manifests: |
             post_consumer/deployment.yaml
-            post_pusher/deployment.yaml
           images: |
             ${{ env.CONSUMER_IMAGE }}
-            ${{ env.PUSHER_IMAGE }}
+
 
       - name: ✅ Deployment Complete
         run: echo "Déploiement terminé. Les images sont locales sur la VM."
