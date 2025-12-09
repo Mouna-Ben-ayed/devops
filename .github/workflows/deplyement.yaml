@@ -7,7 +7,6 @@ on:
   workflow_dispatch: # Permet de lancer manuellement
 
 env:
-  # Tags locaux pour les images (pas de ghcr.io)
   CONSUMER_IMAGE: post-consumer:latest
   PUSHER_IMAGE: post-pusher-kafka:latest
   SA_SECRET_NAME: gcp-sa-secret
@@ -15,18 +14,17 @@ env:
   
 jobs:
   build-and-deploy-on-vm:
-    # CORRECTION 1: Utilisation du label correct pour le self-hosted runner
     runs-on: self-hosted 
     
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. CONFIGURATION DU CLUSTER KIND ---
+      # --- 1. CONFIGURATION DU CLUSTER KIND (CORRECTION DNS ET KUBECONFIG) ---
       
       - name: ⚙️ Setup Kind and Start Cluster
         run: |
-          # 2. CORRECTION 2: Création du cluster Kind uniquement s'il n'existe pas.
+          # 1. Création du cluster uniquement s'il n'existe pas.
           if kind get clusters | grep -q "${{ env.KIND_CLUSTER_NAME }}"; then
             echo "Cluster Kind '${{ env.KIND_CLUSTER_NAME }}' existe déjà. Utilisation de l'existant."
           else
@@ -34,11 +32,19 @@ jobs:
             kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
           fi
 
-          # 3. CORRECTION 3: Récupération et encodage du Kubeconfig (Utilisation de l'encodage EOF pour les variables multi-lignes)
+          # 2. Obtention du Kubeconfig brut (avec nom d'hôte interne)
           KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
           
+          # 3. CORRECTION DNS : Obtenir l'IP du conteneur Kind pour la connexion depuis la VM.
+          #    Cela résout l'erreur 'no such host'.
+          CONTROL_PLANE_IP=$(docker inspect -f '{{.NetworkSettings.IPAddress}}' "${{ env.KIND_CLUSTER_NAME }}-control-plane")
+          
+          # 4. Remplacer le nom d'hôte interne par l'adresse IP et le port 6443.
+          KIND_KUBECONFIG_FIXED=$(echo "$KIND_KUBECONFIG" | sed "s/server: https:\/\/.*/server: https:\/\/$CONTROL_PLANE_IP:6443/")
+          
+          # 5. Injecter le Kubeconfig corrigé (avec l'IP) dans l'environnement (Correction EOF).
           echo 'KUBECONFIG_CONTEXT<<EOF' >> $GITHUB_ENV
-          echo "$KIND_KUBECONFIG" >> $GITHUB_ENV
+          echo "$KIND_KUBECONFIG_FIXED" >> $GITHUB_ENV
           echo 'EOF' >> $GITHUB_ENV
 
       - name: Configure Kubectl (Installer l'exécutable)
@@ -50,6 +56,7 @@ jobs:
         uses: azure/k8s-set-context@v3
         with:
           method: kubeconfig
+          # Utilise la variable d'environnement KUBECONFIG_CONTEXT qui contient l'IP corrigée
           kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
           cluster-context: kind-${{ env.KIND_CLUSTER_NAME }}
           
@@ -75,14 +82,23 @@ jobs:
 
       # --- 3. DÉPLOIEMENT KUBERNETES ---
 
-      - name: Create/Update Secret for Service Account (GCP)
+      # CORRECTION SECRET : Utilisation de la méthode --from-file (fichier temporaire) 
+      # pour éviter les erreurs de formatage Shell avec les sauts de ligne du JSON.
+      - name: 🔑 Create/Update Secret for Service Account (GCP)
         run: |
-
+          echo "Création du fichier temporaire pour le secret GCP..."
+          # 1. Écrit le contenu du secret multi-lignes dans un fichier temporaire
+          echo "${{ secrets.SA_JSON }}" > sa-gcp.json
+          
+          # 2. Utilise kubectl pour créer/appliquer le secret à partir du fichier
+          # Note: --from-file est la méthode la plus robuste.
           kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
-
-            --from-literal=service-account.json='${{ secrets.SA_JSON }}' \
-
+            --from-file=service-account.json=sa-gcp.json \
+            --namespace=default \
             --dry-run=client -o yaml | kubectl apply -f -
+            
+          # 3. Supprime le fichier temporaire
+          rm sa-gcp.json
 
       - name: 🚀 Deploy Kafka Infrastructure
         uses: azure/k8s-deploy@v4
