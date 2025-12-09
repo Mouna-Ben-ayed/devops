@@ -17,7 +17,7 @@ spec:
       containers:
       - name: post-pusher-kafka
         image: post-pusher-kafka:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Never
         command: ["python", "main.py", "--multiple", "--kafka_host=kafka-broker-service:9092"]
         
         # Si cette application doit aussi se connecter à GCP, 
