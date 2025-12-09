@@ -24,11 +24,19 @@ jobs:
       
       - name: ⚙️ Setup Kind and Start Cluster
         run: |
-          kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
+          # 1. Vérifie si le cluster existe.
           
-          # 🌟 CORRECTION ICI : Utiliser un délimiteur (EOF) pour l'écriture multi-lignes
+          if kind get clusters | grep -q "${{ env.KIND_CLUSTER_NAME }}"; then
+            echo "Cluster Kind '${{ env.KIND_CLUSTER_NAME }}' existe déjà. Utilisation de l'existant."
+          else
+            echo "Cluster Kind '${{ env.KIND_CLUSTER_NAME }}' n'existe pas. Création en cours..."
+            kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
+          fi
+
+          # 2. Récupération et encodage du Kubeconfig (Nécessaire dans tous les cas pour les actions Azure)
           KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
           
+          # Correction EOF pour les variables multi-lignes
           echo 'KUBECONFIG_CONTEXT<<EOF' >> $GITHUB_ENV
           echo "$KIND_KUBECONFIG" >> $GITHUB_ENV
           echo 'EOF' >> $GITHUB_ENV
