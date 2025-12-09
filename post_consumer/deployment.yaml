@@ -24,7 +24,7 @@ spec:
           # Assurez-vous que le pipeline injecte bien cette variable (fait via azure/k8s-deploy@v4)
           image: post-consumer:latest 
           # 1. CORRECTION PULL POLICY : Utiliser IfNotPresent pour l'image locale Kind
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           
           command: ["python", "main.py"]
           args:
