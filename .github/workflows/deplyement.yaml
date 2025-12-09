@@ -20,7 +20,7 @@ jobs:
       - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. CONFIGURATION DU CLUSTER KIND (CORRECTION DNS ET KUBECONFIG) ---
+      # --- 1. CONFIGURATION DU CLUSTER KIND (NON MODIFIÉ) ---
       
       - name: ⚙️ Setup Kind and Start Cluster
         run: |
@@ -56,8 +56,7 @@ jobs:
           method: kubeconfig
           kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
 
-      # --- 2. BUILD ET CHARGEMENT DES IMAGES DOCKER DANS KIND (CORRECTION CRITIQUE) ---
-      # Nous utilisons 'kind load docker-image' pour garantir la disponibilité sur tous les nœuds.
+      # --- 2. BUILD ET CHARGEMENT DES IMAGES DOCKER DANS KIND (NON MODIFIÉ) ---
       
       - name: 🔨 Build Consumer Image
         run: docker build -t ${{ env.CONSUMER_IMAGE }} -f ./post_consumer/Dockerfile ./post_consumer
@@ -74,11 +73,12 @@ jobs:
       - name: Wait for Kubernetes API
         run: kubectl wait --for=condition=ready node --all --timeout=300s
 
-      # --- 3. SECRET GCP (CORRECTION: UTILISATION DE --FROM-FILE) ---
-      - name: 🔑 Create/Update GCP Service Account Secret
+      # --- 3. SECRET GCP : CORRECTION CRITIQUE DU FORMAT JSON (Résout le JSONDecodeError) ---
+      - name: 🔑 Create/Update GCP Service Account Secret (CORRIGÉ)
         run: |
-          # Création d'un fichier temporaire pour gérer le JSON multi-lignes
-          echo "${{ secrets.SA_JSON }}" > sa-gcp.json
+          # Utilisation de 'tr -d' et de guillemets simples pour nettoyer le secret JSON
+          # des sauts de ligne et autres caractères qui causent l'erreur de décodage.
+          echo '${{ secrets.SA_JSON }}' | tr -d '\n\r' > sa-gcp.json
           
           kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
             --from-file=service-account.json=sa-gcp.json \
@@ -88,7 +88,8 @@ jobs:
           rm sa-gcp.json
 
       # --- 4. DEPLOY KUBERNETES MANIFESTS ---
-      - name: 🚀 Deploy Kafka Infrastructure
+      
+      - name: 🚀 Deploy Kafka Infrastructure and UI
         uses: azure/k8s-deploy@v4
         with:
           namespace: default
@@ -96,34 +97,22 @@ jobs:
             kafka/configmap.yaml
             kafka/service.yaml
             kafka/deployment.yaml
-
-      - name: 🚀 Deploy Kafka UI
-        uses: azure/k8s-deploy@v4
-        with:
-          namespace: default
-          manifests: |
             ui/service.yaml
             ui/deployment.yaml
 
-      - name: 🚀 Deploy Pusher
-        # Les images seront désormais trouvées sur tous les nœuds grâce à 'kind load'
-        uses: azure/k8s-deploy@v4
-        with:
-          namespace: default
-          manifests: |
-            post_pusher/deployment.yaml
-          images: |
-            ${{ env.PUSHER_IMAGE }}
-      - name: 🚀 Deploy Consumer
-        # Les images seront désormais trouvées sur tous les nœuds grâce à 'kind load'
-        uses: azure/k8s-deploy@v4
-        with:
-          namespace: default
-          manifests: |
-            post_consumer/deployment.yaml
-          images: |
-            ${{ env.CONSUMER_IMAGE }}
+      # CORRECTION : Déploiement groupé des applications et vérification explicite avec kubectl
+      - name: 🚀 Deploy Application Deployments (Pusher & Consumer)
+        run: |
+          echo "Application des manifestes du Pusher et du Consumer..."
+          kubectl apply -f post_pusher/deployment.yaml
+          kubectl apply -f post_consumer/deployment.yaml
 
-
+      - name: ✅ Check Application Rollout Status (Vérification de la santé)
+        run: |
+          echo "Attente de la stabilisation du Pusher..."
+          kubectl rollout status deployment/post-pusher-kafka --timeout=120s
+          echo "Attente de la stabilisation du Consumer..."
+          kubectl rollout status deployment/post-consumer --timeout=120s
+        
       - name: ✅ Deployment Complete
-        run: echo "Déploiement terminé. Les images sont locales sur la VM."
+        run: echo "Déploiement terminé. Les applications devraient être opérationnelles."
