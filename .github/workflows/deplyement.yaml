@@ -66,7 +66,7 @@ jobs:
         run: kind load docker-image ${{ env.CONSUMER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
 
       - name: 🔨 Build Pusher Image
-        run: docker build -t ${{ env.PUSHER_IMAGE }} -f ./post_pusher/Dockerfile ./post_pusHER
+        run: docker build -t ${{ env.PUSHER_IMAGE }} -f ./post_pusher/Dockerfile ./post_pusher
         
       - name: 🚀 Load Pusher Image into Kind Cluster
         run: kind load docker-image ${{ env.PUSHER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
