@@ -75,12 +75,13 @@ jobs:
 
       # --- 3. DÉPLOIEMENT KUBERNETES ---
 
-      - name: 🔑 Create/Update Secret for Service Account (GCP) (Alternative)
+      - name: Create/Update Secret for Service Account (GCP)
         run: |
-          # Crée le secret directement avec kubectl en utilisant le contenu du secret GitHub
+
           kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
-            --from-literal=service-account.json="${{ secrets.SA_JSON }}" \
-            --namespace=default \
+
+            --from-literal=service-account.json='${{ secrets.SA_JSON }}' \
+
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: 🚀 Deploy Kafka Infrastructure
