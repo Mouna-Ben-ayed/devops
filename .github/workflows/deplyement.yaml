@@ -17,21 +17,20 @@ jobs:
     runs-on: self-hosted
     
     steps:
-      - name: 📥 Checkout Code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. CONFIGURATION DU CLUSTER KIND (NON MODIFIÉ) ---
+      # --- 1. CONFIGURATION DU CLUSTER KIND ---
       
-      - name: ⚙️ Setup Kind and Start Cluster
+      - name: Setup Kind and Start Cluster
         run: |
-          # 1. Création du cluster uniquement s'il n'existe pas.
           if kind get clusters | grep -q "${{ env.KIND_CLUSTER_NAME }}"; then
             echo "Cluster Kind '${{ env.KIND_CLUSTER_NAME }}' existe déjà. Utilisation de l'existant."
           else
             kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
           fi
 
-          # 2. Obtention du Kubeconfig brut (avec nom d'hôte interne)
+          # 2. Kubeconfig
           KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
           
           # 3. CORRECTION DNS : Obtenir l'IP du conteneur Kind depuis l'hôte
@@ -40,7 +39,7 @@ jobs:
           # 4. Remplacer le nom d'hôte interne par l'adresse IP et le port 6443.
           KIND_KUBECONFIG_FIXED=$(echo "$KIND_KUBECONFIG" | sed "s/server: https:\/\/.*/server: https:\/\/$CONTROL_PLANE_IP:6443/")
           
-          # 5. Injecter le Kubeconfig corrigé (avec l'IP) en utilisant la syntaxe EOF (multi-lignes).
+          # 5. Exporter le kubeconfig corrigé comme variable d'environnement GitHub
           echo 'KUBECONFIG_CONTEXT<<EOF' >> $GITHUB_ENV
           echo "$KIND_KUBECONFIG_FIXED" >> $GITHUB_ENV
           echo 'EOF' >> $GITHUB_ENV
@@ -50,31 +49,31 @@ jobs:
         with:
           version: 'latest'
 
-      - name: 🔗 Set Kubernetes Context
+      - name: Set Kubernetes Context
         uses: azure/k8s-set-context@v3
         with:
           method: kubeconfig
           kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
 
-      # --- 2. BUILD ET CHARGEMENT DES IMAGES DOCKER DANS KIND (NON MODIFIÉ) ---
+      # --- 2. BUILD ET CHARGEMENT DES IMAGES ---
       
-      - name: 🔨 Build Consumer Image
+      - name: Build Consumer Image
         run: docker build -t ${{ env.CONSUMER_IMAGE }} -f ./post_consumer/Dockerfile ./post_consumer
         
-      - name: 🚀 Load Consumer Image into Kind Cluster
+      - name: Load Consumer Image into Kind Cluster
         run: kind load docker-image ${{ env.CONSUMER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
 
-      - name: 🔨 Build Pusher Image
+      - name: Build Pusher Image
         run: docker build -t ${{ env.PUSHER_IMAGE }} -f ./post_pusher/Dockerfile ./post_pusher
         
-      - name: 🚀 Load Pusher Image into Kind Cluster
+      - name: Load Pusher Image into Kind Cluster
         run: kind load docker-image ${{ env.PUSHER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
 
       - name: Wait for Kubernetes API
         run: kubectl wait --for=condition=ready node --all --timeout=300s
 
-      # --- 3. SECRET GCP : CORRECTION CRITIQUE DU FORMAT JSON (Résout le JSONDecodeError) ---
-      - name: 🔑 Create/Update GCP Service Account Secret (CORRIGÉ)
+      # --- 3. Secrets ---
+      - name: Create/Update GCP Service Account Secret (CORRIGÉ)
         run: |
           # Utilisation de 'tr -d' et de guillemets simples pour nettoyer le secret JSON
           # des sauts de ligne et autres caractères qui causent l'erreur de décodage.
@@ -87,32 +86,65 @@ jobs:
             
           rm sa-gcp.json
 
-      # --- 4. DEPLOY KUBERNETES MANIFESTS ---
-      
-      - name: 🚀 Deploy Kafka Infrastructure and UI
-        uses: azure/k8s-deploy@v4
-        with:
-          namespace: default
-          manifests: |
-            kafka/configmap.yaml
-            kafka/service.yaml
-            kafka/deployment.yaml
-            ui/service.yaml
-            ui/deployment.yaml
+      # --- 4. Deploy MongoDB Service ---
+      - name: Deploy MongoDB StatefulSet
+        run : |
+          echo "Déploiement de MongoDB ..."
+          kubectl apply -f MongoDB/secret.yaml
+          kubectl apply -f MongoDB/service.yaml
+          kubectl apply -f MongoDB/statefulset.yaml
 
-      # CORRECTION : Déploiement groupé des applications et vérification explicite avec kubectl
-      - name: 🚀 Deploy Application Deployments (Pusher & Consumer)
+      - name: Wait for MongoDB to be Ready
         run: |
-          echo "Application des manifestes du Pusher et du Consumer..."
+          echo "Attente du démarrage de MongoDB..."
+          kubectl wait --for=condition=ready pod/mongodb-0 --timeout=180s
+          echo "MongoDB est opérationnel."
+
+      # --- 5. Deploy Kafka and UI ---
+      
+      - name: Deploy Kafka and Kafka UI
+        run: |
+          echo "Déploiement de Kafka et Kafka UI ..."
+          kubectl apply -f kafka/configmap.yaml
+          kubectl apply -f kafka/service.yaml
+          kubectl apply -f kafka/deployment.yaml
+          kubectl apply -f ui/configmap.yaml
+          kubectl apply -f ui/service.yaml
+          kubectl apply -f ui/deployment.yaml
+
+      - name: Wait for Kafka to be Ready
+        run: |
+          echo "Attente du démarrage de Kafka..."
+          kubectl rollout status deployment/kafka-broker --timeout=180s
+          echo "Kafka est opérationnel."
+
+      # --- 6. Deploy Application Deployments (Pusher & Consumer) ---
+      - name: Deploy Application Deployments (Pusher & Consumer)
+        run: |
+          echo "Application du Pusher et du Consumer..."
           kubectl apply -f post_pusher/deployment.yaml
           kubectl apply -f post_consumer/deployment.yaml
 
-      - name: ✅ Check Application Rollout Status (Vérification de la santé)
+      - name: Check Application Rollout Status
         run: |
-          echo "Attente de la stabilisation du Pusher..."
+          echo "Attente du Pusher ..."
           kubectl rollout status deployment/post-pusher-kafka --timeout=120s
-          echo "Attente de la stabilisation du Consumer..."
+          echo "Attente du Consumer..."
           kubectl rollout status deployment/post-consumer --timeout=120s
+
+      - name: Show Deployment Status
+        run: |
+          echo "Vérification de l'état des pods..."
+          kubectl get pods -o wide
+          echo ""
+          echo "Vérification des services..."
+          kubectl get services -o wide
+          echo ""
+          echo "Vérification des StatefulSets..."
+          kubectl get statefulsets -o wide
+          echo ""
+          echo "Vérification des Deployments..."
+          kubectl get deployments -o wide
         
-      - name: ✅ Deployment Complete
+      - name: Deployment Complete
         run: echo "Déploiement terminé. Les applications devraient être opérationnelles."
