@@ -1,9 +1,8 @@
-name: CI/CD Deployment - Self-Hosted VM (No Registry)
+name: CI/CD Deployment - Self-Hosted VM (Kind, No Registry)
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -11,43 +10,66 @@ env:
   PUSHER_IMAGE: post-pusher-kafka:latest
   SA_SECRET_NAME: gcp-sa-secret
   KIND_CLUSTER_NAME: devops-kind-cluster
-  
+
+# =========================================================
+# JOB 1 — BUILD
+# =========================================================
 jobs:
-  build-and-deploy-on-vm:
+  build:
+    name: Build Docker Images
     runs-on: self-hosted
-    
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- 1. CONFIGURATION DU CLUSTER KIND ---
-      
-      - name: Setup Kind and Start Cluster
+      - name: Build Consumer Image
+        run: |
+          docker build \
+            -t ${{ env.CONSUMER_IMAGE }} \
+            -f post_consumer/Dockerfile \
+            post_consumer
+
+      - name: Build Pusher Image
+        run: |
+          docker build \
+            -t ${{ env.PUSHER_IMAGE }} \
+            -f post_pusher/Dockerfile \
+            post_pusher
+
+# =========================================================
+# JOB 2 — DEPLOY
+# =========================================================
+  deploy:
+    name: Deploy to Kind Cluster
+    runs-on: self-hosted
+    needs: build
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # ---------- KIND CLUSTER ----------
+      - name: Setup Kind Cluster
         run: |
           if kind get clusters | grep -q "${{ env.KIND_CLUSTER_NAME }}"; then
-            echo "Cluster Kind '${{ env.KIND_CLUSTER_NAME }}' existe déjà. Utilisation de l'existant."
+            echo "Cluster Kind déjà existant"
           else
-            kind create cluster --name ${{ env.KIND_CLUSTER_NAME }} --config ./kind/config.yaml
+            kind create cluster \
+              --name ${{ env.KIND_CLUSTER_NAME }} \
+              --config ./kind/config.yaml
           fi
 
-          # 2. Kubeconfig
           KIND_KUBECONFIG=$(kind get kubeconfig --name ${{ env.KIND_CLUSTER_NAME }} --internal)
-          
-          # 3. CORRECTION DNS : Obtenir l'IP du conteneur Kind depuis l'hôte
           CONTROL_PLANE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${{ env.KIND_CLUSTER_NAME }}-control-plane")
-          
-          # 4. Remplacer le nom d'hôte interne par l'adresse IP et le port 6443.
-          KIND_KUBECONFIG_FIXED=$(echo "$KIND_KUBECONFIG" | sed "s/server: https:\/\/.*/server: https:\/\/$CONTROL_PLANE_IP:6443/")
-          
-          # 5. Exporter le kubeconfig corrigé comme variable d'environnement GitHub
-          echo 'KUBECONFIG_CONTEXT<<EOF' >> $GITHUB_ENV
-          echo "$KIND_KUBECONFIG_FIXED" >> $GITHUB_ENV
-          echo 'EOF' >> $GITHUB_ENV
+          FIXED_KUBECONFIG=$(echo "$KIND_KUBECONFIG" | sed "s/server: https:\/\/.*/server: https:\/\/$CONTROL_PLANE_IP:6443/")
 
-      - name: Configure Kubectl
+          echo "KUBECONFIG_CONTEXT<<EOF" >> $GITHUB_ENV
+          echo "$FIXED_KUBECONFIG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Setup kubectl
         uses: azure/setup-kubectl@v3
-        with:
-          version: 'latest'
 
       - name: Set Kubernetes Context
         uses: azure/k8s-set-context@v3
@@ -55,56 +77,40 @@ jobs:
           method: kubeconfig
           kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
 
-      # --- 2. BUILD ET CHARGEMENT DES IMAGES ---
-      
-      - name: Build Consumer Image
-        run: docker build -t ${{ env.CONSUMER_IMAGE }} -f ./post_consumer/Dockerfile ./post_consumer
-        
-      - name: Load Consumer Image into Kind Cluster
-        run: kind load docker-image ${{ env.CONSUMER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
+      # ---------- LOAD IMAGES ----------
+      - name: Load Images into Kind
+        run: |
+          kind load docker-image ${{ env.CONSUMER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
+          kind load docker-image ${{ env.PUSHER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
 
-      - name: Build Pusher Image
-        run: docker build -t ${{ env.PUSHER_IMAGE }} -f ./post_pusher/Dockerfile ./post_pusher
-        
-      - name: Load Pusher Image into Kind Cluster
-        run: kind load docker-image ${{ env.PUSHER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
-
-      - name: Wait for Kubernetes API
+      - name: Wait for Nodes
         run: kubectl wait --for=condition=ready node --all --timeout=300s
 
-      # --- 3. Secrets ---
-      - name: Create/Update GCP Service Account Secret (CORRIGÉ)
+      # ---------- SECRETS ----------
+      - name: Create / Update GCP Service Account Secret
         run: |
-          # Utilisation de 'tr -d' et de guillemets simples pour nettoyer le secret JSON
-          # des sauts de ligne et autres caractères qui causent l'erreur de décodage.
           echo '${{ secrets.SA_JSON }}' | tr -d '\n\r' > sa-gcp.json
-          
+
           kubectl create secret generic ${{ env.SA_SECRET_NAME }} \
             --from-file=service-account.json=sa-gcp.json \
             --namespace=default \
             --dry-run=client -o yaml | kubectl apply -f -
-            
+
           rm sa-gcp.json
 
-      # --- 4. Deploy MongoDB Service ---
-      - name: Deploy MongoDB StatefulSet
-        run : |
-          echo "Déploiement de MongoDB ..."
+      # ---------- MONGODB ----------
+      - name: Deploy MongoDB
+        run: |
           kubectl apply -f MongoDB/secret.yaml
           kubectl apply -f MongoDB/service.yaml
           kubectl apply -f MongoDB/statefulset.yaml
 
-      - name: Wait for MongoDB to be Ready
-        run: |
-          echo "Attente du démarrage de MongoDB..."
-          kubectl wait --for=condition=ready pod/mongodb-0 --timeout=180s
-          echo "MongoDB est opérationnel."
+      - name: Wait for MongoDB
+        run: kubectl wait --for=condition=ready pod/mongodb-0 --timeout=180s
 
-      # --- 5. Deploy Kafka and UI ---
-      
-      - name: Deploy Kafka and Kafka UI
+      # ---------- KAFKA ----------
+      - name: Deploy Kafka & UI
         run: |
-          echo "Déploiement de Kafka et Kafka UI ..."
           kubectl apply -f kafka/configmap.yaml
           kubectl apply -f kafka/service.yaml
           kubectl apply -f kafka/deployment.yaml
@@ -112,40 +118,50 @@ jobs:
           kubectl apply -f ui/service.yaml
           kubectl apply -f ui/deployment.yaml
 
-      - name: Wait for Kafka to be Ready
-        run: |
-          echo "Attente du démarrage de Kafka..."
-          kubectl rollout status deployment/kafka-broker --timeout=180s
-          echo "Kafka est opérationnel."
+      - name: Wait for Kafka
+        run: kubectl rollout status deployment/kafka-broker --timeout=180s
 
-      # --- 6. Deploy Application Deployments (Pusher & Consumer) ---
-      - name: Deploy Application Deployments (Pusher & Consumer)
+      # ---------- APPLICATIONS ----------
+      - name: Deploy Applications
         run: |
-          echo "Application du Pusher et du Consumer..."
           kubectl apply -f post_pusher/deployment.yaml
           kubectl apply -f post_consumer/configmap.yaml
           kubectl apply -f post_consumer/deployment.yaml
 
-      - name: Check Application Rollout Status
+      - name: Wait for Applications
         run: |
-          echo "Attente du Pusher ..."
           kubectl rollout status deployment/post-pusher-kafka --timeout=120s
-          echo "Attente du Consumer..."
           kubectl rollout status deployment/post-consumer --timeout=120s
 
-      - name: Show Deployment Status
+# =========================================================
+# JOB 3 — TEST
+# =========================================================
+  test:
+    name: Integration & Smoke Tests
+    runs-on: self-hosted
+    needs: deploy
+
+    steps:
+      - name: Kubernetes Status
         run: |
-          echo "Vérification de l'état des pods..."
           kubectl get pods -o wide
-          echo ""
-          echo "Vérification des services..."
-          kubectl get services -o wide
-          echo ""
-          echo "Vérification des StatefulSets..."
-          kubectl get statefulsets -o wide
-          echo ""
-          echo "Vérification des Deployments..."
-          kubectl get deployments -o wide
-        
-      - name: Deployment Complete
-        run: echo "Déploiement terminé. Les applications devraient être opérationnelles."
+          kubectl get services
+          kubectl get deployments
+          kubectl get statefulsets
+
+      - name: MongoDB Smoke Test
+        run: |
+          kubectl exec mongodb-0 -- \
+            mongosh --eval "db.adminCommand('ping')"
+
+      - name: Kafka Smoke Test
+        run: |
+          kubectl get svc | grep kafka
+
+      - name: Application Rollout Check
+        run: |
+          kubectl rollout status deployment/post-consumer
+          kubectl rollout status deployment/post-pusher-kafka
+
+      - name: Pipeline Success
+        run: echo "✅ Build, Deploy & Tests réussis"
