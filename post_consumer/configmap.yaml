@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: post-consumer-config
+data:
+  KAFKA_BROKER: "kafka-broker-service:9092"
+  KAFKA_TOPIC: "posts"
+  BQ_DATASET: "data_devops"
+  BQ_TABLE: "posts"

@@ -27,10 +27,26 @@ spec:
           env:
           - name: GOOGLE_APPLICATION_CREDENTIALS
             value: /app/secrets/service-account.json # Chemin correct du fichier monté
+          - name: KAFKA_BROKER 
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: KAFKA_BROKER
+          - name: KAFKA_TOPIC 
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: KAFKA_TOPIC
           - name: BQ_DATASET
-            value: "data_devops"
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: BQ_DATASET
           - name: BQ_TABLE
-            value: "posts"
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: BQ_TABLE
           - name: MONGO_HOST
             value: "mongodb-service"
           - name: MONGO_PORT
