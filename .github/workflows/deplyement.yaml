@@ -123,6 +123,7 @@ jobs:
         run: |
           echo "Application du Pusher et du Consumer..."
           kubectl apply -f post_pusher/deployment.yaml
+          kubectl apply -f post_consumer/configmap.yaml
           kubectl apply -f post_consumer/deployment.yaml
 
       - name: Check Application Rollout Status
