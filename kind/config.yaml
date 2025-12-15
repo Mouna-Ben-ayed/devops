@@ -33,9 +33,6 @@ nodes:
     hostPort: 30004
   - containerPort: 30005
     hostPort: 30005
-  extraMounts:
-  - hostPath: ./airflow/dags
-    containerPath: /airflow/dags
 # the three workers
 - role: worker
 - role: worker
