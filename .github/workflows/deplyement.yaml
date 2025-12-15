@@ -11,9 +11,6 @@ env:
   SA_SECRET_NAME: gcp-sa-secret
   KIND_CLUSTER_NAME: devops-kind-cluster
 
-# =========================================================
-# JOB 1 — BUILD
-# =========================================================
 jobs:
   build:
     name: Build Docker Images
@@ -36,10 +33,6 @@ jobs:
             -t ${{ env.PUSHER_IMAGE }} \
             -f post_pusher/Dockerfile \
             post_pusher
-
-# =========================================================
-# JOB 2 — DEPLOY
-# =========================================================
   deploy:
     name: Deploy to Kind Cluster
     runs-on: self-hosted
@@ -77,7 +70,6 @@ jobs:
           method: kubeconfig
           kubeconfig: ${{ env.KUBECONFIG_CONTEXT }}
 
-      # ---------- LOAD IMAGES ----------
       - name: Load Images into Kind
         run: |
           kind load docker-image ${{ env.CONSUMER_IMAGE }} --name ${{ env.KIND_CLUSTER_NAME }}
@@ -86,7 +78,6 @@ jobs:
       - name: Wait for Nodes
         run: kubectl wait --for=condition=ready node --all --timeout=300s
 
-      # ---------- SECRETS ----------
       - name: Create / Update GCP Service Account Secret
         run: |
           echo '${{ secrets.SA_JSON }}' | tr -d '\n\r' > sa-gcp.json
@@ -98,7 +89,6 @@ jobs:
 
           rm sa-gcp.json
 
-      # ---------- MONGODB ----------
       - name: Deploy MongoDB
         run: |
           kubectl apply -f MongoDB/secret.yaml
@@ -108,7 +98,6 @@ jobs:
       - name: Wait for MongoDB
         run: kubectl wait --for=condition=ready pod/mongodb-0 --timeout=180s
 
-      # ---------- KAFKA ----------
       - name: Deploy Kafka & UI
         run: |
           kubectl apply -f kafka/configmap.yaml
@@ -121,7 +110,6 @@ jobs:
       - name: Wait for Kafka
         run: kubectl rollout status deployment/kafka-broker --timeout=180s
 
-      # ---------- APPLICATIONS ----------
       - name: Deploy Applications
         run: |
           kubectl apply -f post_pusher/deployment.yaml
@@ -133,9 +121,6 @@ jobs:
           kubectl rollout status deployment/post-pusher-kafka --timeout=120s
           kubectl rollout status deployment/post-consumer --timeout=120s
 
-# =========================================================
-# JOB 3 — TEST
-# =========================================================
   test:
     name: Integration & Smoke Tests
     runs-on: self-hosted
@@ -164,4 +149,4 @@ jobs:
           kubectl rollout status deployment/post-pusher-kafka
 
       - name: Pipeline Success
-        run: echo "✅ Build, Deploy & Tests réussis"
+        run: echo "Build, Deploy & Tests réussis"

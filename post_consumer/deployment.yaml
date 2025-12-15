@@ -26,7 +26,7 @@ spec:
             
           env:
           - name: GOOGLE_APPLICATION_CREDENTIALS
-            value: /app/secrets/service-account.json # Chemin correct du fichier monté
+            value: /app/secrets/service-account.json 
           - name: KAFKA_BROKER 
             valueFrom:
               configMapKeyRef:
@@ -48,9 +48,15 @@ spec:
                 name: post-consumer-config
                 key: BQ_TABLE
           - name: MONGO_HOST
-            value: "mongodb-service"
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: MONGO_HOST
           - name: MONGO_PORT
-            value: "27017"
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: MONGO_PORT
           - name: MONGO_USER
             valueFrom:
               secretKeyRef:
@@ -62,9 +68,15 @@ spec:
                 name: mongodb-secret
                 key: password
           - name: MONGO_DB
-            value: "posts_db"
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: MONGO_DB
           - name: MONGO_COLLECTION
-            value: "posts"
+            valueFrom:
+              configMapKeyRef:
+                name: post-consumer-config
+                key: MONGO_COLLECTION
             
           volumeMounts:
             - name: gcp-sa-volume
@@ -74,4 +86,4 @@ spec:
       volumes:
         - name: gcp-sa-volume
           secret:
-            secretName: gcp-sa-secret # Le nom du Secret
+            secretName: gcp-sa-secret

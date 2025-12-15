@@ -7,3 +7,8 @@ data:
   KAFKA_TOPIC: "posts"
   BQ_DATASET: "data_devops"
   BQ_TABLE: "posts"
+  MONGO_HOST: "mongodb-service"
+  MONGO_PORT: "27017"
+  MONGO_DB: "posts_db"
+  MONGO_COLLECTION: "posts"
+  
